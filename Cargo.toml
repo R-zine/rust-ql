@@ -1,0 +1,16 @@
+[package]
+name = "rust-ql"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["crates/backend",
+    "crates/interface",
+    "crates/lexer",
+    "crates/parser",
+]
+resolver = "3"
+
+[dependencies]
+backend = { path = "./crates/backend" }
+
