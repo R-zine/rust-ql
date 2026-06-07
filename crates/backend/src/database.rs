@@ -31,7 +31,25 @@ pub struct Table {
     pub rows: Vec<Row>,
 
     pub primary_key_column: Option<usize>,
+
+    #[serde(skip)]
     pub primary_key_index: HashMap<PrimaryKeyValue, usize>,
+}
+
+impl Table {
+    pub fn rebuild_index(&mut self) {
+        self.primary_key_index.clear();
+
+        let Some(pk_col) = self.primary_key_column else {
+            return;
+        };
+
+        for (i, row) in self.rows.iter().enumerate() {
+            if let Ok(pk) = PrimaryKeyValue::try_from(&row[pk_col]) {
+                self.primary_key_index.insert(pk, i);
+            }
+        }
+    }
 }
 
 pub type Row = Vec<Value>;

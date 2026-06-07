@@ -9,6 +9,9 @@ pub enum BackendError {
     Execution(String),
     InvalidPrimaryKey(String),
     DuplicatePrimaryKey(String),
+
+    IoError(String),
+    SerializationError(String),
 }
 
 impl From<lexer::LexError> for BackendError {

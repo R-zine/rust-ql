@@ -139,6 +139,27 @@ fn print_projected_row(row: &[Value], table: &Table, stmt: &SelectStatement) {
     }
 }
 
+fn insert_row(table: &mut Table, row: Vec<Value>) -> Result<(), BackendError> {
+    let row_index = table.rows.len();
+
+    // primary key handling
+    if let Some(pk_col) = table.primary_key_column {
+        let pk_value = PrimaryKeyValue::try_from(&row[pk_col]).map_err(|_| {
+            BackendError::InvalidPrimaryKey("unsupported primary key type".to_string())
+        })?;
+
+        if table.primary_key_index.contains_key(&pk_value) {
+            return Err(BackendError::DuplicatePrimaryKey(format!("{pk_value:?}")));
+        }
+
+        table.primary_key_index.insert(pk_value, row_index);
+    }
+
+    table.rows.push(row);
+
+    Ok(())
+}
+
 // ========================
 // EXECUTOR
 // ========================
@@ -202,38 +223,14 @@ impl Executor {
         let mut row = vec![Value::Null; table.columns.len()];
 
         for (i, expr) in stmt.values.iter().enumerate() {
-            if i < row.len() {
+            if i < table.columns.len() {
                 row[i] = eval_const(expr);
             }
         }
 
-        // Primary key validation
-        if let Some(pk_col) = table.primary_key_column {
-            let pk_value = PrimaryKeyValue::try_from(&row[pk_col]).map_err(|_| {
-                BackendError::InvalidPrimaryKey("unsupported primary key type".to_string())
-            })?;
-
-            if table.primary_key_index.contains_key(&pk_value) {
-                return Err(BackendError::DuplicatePrimaryKey(format!("{pk_value:?}")));
-            }
-        }
-
-        let row_index = table.rows.len();
-
-        table.rows.push(row);
-
-        // Update index
-        if let Some(pk_col) = table.primary_key_column {
-            let pk_value =
-                PrimaryKeyValue::try_from(&table.rows[row_index][pk_col]).map_err(|_| {
-                    BackendError::InvalidPrimaryKey("unsupported primary key type".to_string())
-                })?;
-
-            table.primary_key_index.insert(pk_value, row_index);
-        }
+        insert_row(table, row)?;
 
         save_db(&self.database, &self.path)?;
-
         Ok(())
     }
 
@@ -256,26 +253,27 @@ impl Executor {
                 op: BinaryOp::Equal,
                 right,
             } = &where_expr.kind
-                && let ExprKind::Identifier(column_name) = &left.kind
-                    && let Some(pk_col) = table.primary_key_column {
-                        let pk_name = &table.columns[pk_col].name;
+            && let ExprKind::Identifier(column_name) = &left.kind
+            && let Some(pk_col) = table.primary_key_column
+        {
+            let pk_name = &table.columns[pk_col].name;
 
-                        if pk_name == column_name {
-                            let literal_value = eval_const(right);
+            if pk_name == column_name {
+                let literal_value = eval_const(right);
 
-                            if let Ok(pk_value) = PrimaryKeyValue::try_from(&literal_value) {
-                                if let Some(row_idx) = table.primary_key_index.get(&pk_value) {
-                                    let row = &table.rows[*row_idx];
+                if let Ok(pk_value) = PrimaryKeyValue::try_from(&literal_value) {
+                    if let Some(row_idx) = table.primary_key_index.get(&pk_value) {
+                        let row = &table.rows[*row_idx];
 
-                                    print_projected_row(row, table, &stmt);
+                        print_projected_row(row, table, &stmt);
 
-                                    return Ok(());
-                                }
-
-                                return Ok(());
-                            }
-                        }
+                        return Ok(());
                     }
+
+                    return Ok(());
+                }
+            }
+        }
 
         // Fallback: full scan
         for row in &table.rows {
@@ -303,14 +301,15 @@ impl Executor {
             .ok_or_else(|| BackendError::TableNotFound(table_name.to_string()))?;
 
         for i in 0..count {
-            table.rows.push(vec![
+            let row = vec![
                 Value::Integer(i as i64),
                 Value::String(format!("user{}", i)),
-            ]);
+            ];
+
+            insert_row(table, row)?; // IMPORTANT FIX
         }
 
         save_db(&self.database, &self.path)?;
-
         Ok(())
     }
 }

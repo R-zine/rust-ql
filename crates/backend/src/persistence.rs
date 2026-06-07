@@ -17,9 +17,14 @@ pub fn load_db(path: &str) -> Result<Database, BackendError> {
         return Ok(Database::default());
     }
 
-    let content = fs::read_to_string(path).map_err(|e| BackendError::Execution(e.to_string()))?;
+    let file = std::fs::read_to_string(path).map_err(|e| BackendError::IoError(e.to_string()))?;
 
-    let db = serde_json::from_str(&content).map_err(|e| BackendError::Execution(e.to_string()))?;
+    let mut database: Database =
+        serde_json::from_str(&file).map_err(|e| BackendError::SerializationError(e.to_string()))?;
 
-    Ok(db)
+    for table in database.tables.values_mut() {
+        table.rebuild_index();
+    }
+
+    Ok(database)
 }
