@@ -7,6 +7,8 @@ pub enum BackendError {
     TableNotFound(String),
 
     Execution(String),
+    InvalidPrimaryKey(String),
+    DuplicatePrimaryKey(String),
 }
 
 impl From<lexer::LexError> for BackendError {

@@ -1,15 +1,6 @@
 use interface::{
-    ColumnDefinition,
-    CreateTableStatement,
-    DataType,
-    InsertStatement,
-    Keyword,
-    SelectItem,
-    SelectStatement,
-    SpannedToken,
-    Statement,
-    StatementKind,
-    Token,
+    ColumnDefinition, CreateTableStatement, DataType, InsertStatement, Keyword, SelectItem,
+    SelectStatement, SpannedToken, Statement, StatementKind, Token,
 };
 
 use crate::error::ParseError;
@@ -27,21 +18,13 @@ impl Parser {
         }
     }
 
-    pub fn parse(
-        &mut self,
-    ) -> Result<Statement, ParseError> {
+    pub fn parse(&mut self) -> Result<Statement, ParseError> {
         match &self.current().token {
-            Token::Keyword(Keyword::Select) => {
-                self.parse_select()
-            }
+            Token::Keyword(Keyword::Select) => self.parse_select(),
 
-            Token::Keyword(Keyword::Insert) => {
-                self.parse_insert()
-            }
+            Token::Keyword(Keyword::Insert) => self.parse_insert(),
 
-            Token::Keyword(Keyword::Create) => {
-                self.parse_create_table()
-            }
+            Token::Keyword(Keyword::Create) => self.parse_create_table(),
 
             _ => Err(ParseError::UnexpectedToken {
                 expected: "statement".into(),
@@ -51,9 +34,7 @@ impl Parser {
         }
     }
 
-    fn parse_select(
-        &mut self,
-    ) -> Result<Statement, ParseError> {
+    fn parse_select(&mut self) -> Result<Statement, ParseError> {
         let start_span = self.current().span;
 
         self.expect_keyword(Keyword::Select)?;
@@ -84,9 +65,7 @@ impl Parser {
         ))
     }
 
-    fn parse_insert(
-        &mut self,
-    ) -> Result<Statement, ParseError> {
+    fn parse_insert(&mut self) -> Result<Statement, ParseError> {
         let start_span = self.current().span;
 
         self.expect_keyword(Keyword::Insert)?;
@@ -112,9 +91,7 @@ impl Parser {
         ))
     }
 
-    fn parse_create_table(
-        &mut self,
-    ) -> Result<Statement, ParseError> {
+    fn parse_create_table(&mut self) -> Result<Statement, ParseError> {
         let start_span = self.current().span;
 
         self.expect_keyword(Keyword::Create)?;
@@ -127,19 +104,12 @@ impl Parser {
         let end_span = self.current().span;
 
         Ok(Statement::new(
-            StatementKind::CreateTable(
-                CreateTableStatement {
-                    name,
-                    columns,
-                },
-            ),
+            StatementKind::CreateTable(CreateTableStatement { name, columns }),
             start_span.merge(end_span),
         ))
     }
 
-    fn parse_select_columns(
-        &mut self,
-    ) -> Result<Vec<SelectItem>, ParseError> {
+    fn parse_select_columns(&mut self) -> Result<Vec<SelectItem>, ParseError> {
         let mut columns = Vec::new();
 
         if matches!(self.current().token, Token::Star) {
@@ -153,15 +123,13 @@ impl Parser {
         loop {
             let name = self.parse_identifier()?;
 
-            columns.push(
-                SelectItem::Expression {
-                    expr: interface::Expr::new(
-                        interface::ExprKind::Identifier(name),
-                        self.current().span,
-                    ),
-                    alias: None,
-                },
-            );
+            columns.push(SelectItem::Expression {
+                expr: interface::Expr::new(
+                    interface::ExprKind::Identifier(name),
+                    self.current().span,
+                ),
+                alias: None,
+            });
 
             match &self.current().token {
                 Token::Comma => {
@@ -185,9 +153,7 @@ impl Parser {
         Ok(columns)
     }
 
-    fn parse_column_definitions(
-        &mut self,
-    ) -> Result<Vec<ColumnDefinition>, ParseError> {
+    fn parse_column_definitions(&mut self) -> Result<Vec<ColumnDefinition>, ParseError> {
         let mut columns = Vec::new();
 
         self.expect_token(Token::LParen)?;
@@ -197,10 +163,21 @@ impl Parser {
 
             let data_type = self.parse_data_type()?;
 
+            let mut primary_key = false;
+
+            if matches!(self.current().token, Token::Keyword(Keyword::Primary)) {
+                self.advance();
+
+                self.expect_keyword(Keyword::Key)?;
+
+                primary_key = true;
+            }
+
             columns.push(ColumnDefinition {
                 name,
                 data_type,
                 nullable: true,
+                primary_key,
             });
 
             match &self.current().token {
@@ -226,9 +203,7 @@ impl Parser {
         Ok(columns)
     }
 
-    fn parse_data_type(
-        &mut self,
-    ) -> Result<DataType, ParseError> {
+    fn parse_data_type(&mut self) -> Result<DataType, ParseError> {
         match &self.current().token {
             Token::Identifier(name) => {
                 let ty = match name.to_uppercase().as_str() {
@@ -239,10 +214,7 @@ impl Parser {
 
                     _ => {
                         return Err(ParseError::Message {
-                            message: format!(
-                                "Unknown data type '{}'",
-                                name
-                            ),
+                            message: format!("Unknown data type '{}'", name),
                             span: self.current().span,
                         });
                     }

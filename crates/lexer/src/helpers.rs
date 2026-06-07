@@ -1,9 +1,4 @@
-use interface::{
-    Keyword,
-    Span,
-    SpannedToken,
-    Token,
-};
+use interface::{Keyword, Span, SpannedToken, Token};
 
 pub fn is_identifier_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_'
@@ -13,11 +8,7 @@ pub fn is_identifier_part(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-pub fn parse_identifier_or_keyword(
-    text: &str,
-    start: usize,
-    end: usize,
-) -> SpannedToken {
+pub fn parse_identifier_or_keyword(text: &str, start: usize, end: usize) -> SpannedToken {
     let value = &text[start..end];
 
     let token = match value.to_ascii_uppercase().as_str() {
@@ -32,6 +23,9 @@ pub fn parse_identifier_or_keyword(
         "CREATE" => Token::Keyword(Keyword::Create),
         "TABLE" => Token::Keyword(Keyword::Table),
 
+        "PRIMARY" => Token::Keyword(Keyword::Primary),
+        "KEY" => Token::Keyword(Keyword::Key),
+
         "TRUE" => Token::Boolean(true),
         "FALSE" => Token::Boolean(false),
         "NULL" => Token::Null,
@@ -45,11 +39,7 @@ pub fn parse_identifier_or_keyword(
     }
 }
 
-pub fn parse_number(
-    text: &str,
-    start: usize,
-    end: usize,
-) -> SpannedToken {
+pub fn parse_number(text: &str, start: usize, end: usize) -> SpannedToken {
     let value = &text[start..end];
 
     let token = if value.contains('.') {
@@ -64,11 +54,7 @@ pub fn parse_number(
     }
 }
 
-pub fn parse_string(
-    value: String,
-    start: usize,
-    end: usize,
-) -> SpannedToken {
+pub fn parse_string(value: String, start: usize, end: usize) -> SpannedToken {
     SpannedToken {
         token: Token::String(value),
         span: Span::new(start, end),

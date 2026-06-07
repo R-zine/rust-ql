@@ -1,23 +1,17 @@
+use std::collections::HashMap;
+
 use interface::{
-    Statement,
-    StatementKind,
-    CreateTableStatement,
-    InsertStatement,
-    SelectStatement,
-    Expr,
-    ExprKind,
-    Literal,
-    Value,
-    BinaryOp,
+    BinaryOp, CreateTableStatement, Expr, ExprKind, InsertStatement, Literal, SelectItem,
+    SelectStatement, Statement, StatementKind, Value,
 };
 
-use crate::persistence::{save_db, load_db};
+use crate::database::PrimaryKeyValue;
+use crate::persistence::{load_db, save_db};
 
 use crate::{
     database::{Database, Table},
     error::BackendError,
 };
-
 
 // ========================
 // BINARY EVALUATION
@@ -25,7 +19,6 @@ use crate::{
 
 fn eval_binary(left: Value, op: BinaryOp, right: Value) -> bool {
     use Value::*;
-
 
     match (left, right) {
         (Integer(a), Integer(b)) => match op {
@@ -35,7 +28,7 @@ fn eval_binary(left: Value, op: BinaryOp, right: Value) -> bool {
             BinaryOp::LessThan => a < b,
             BinaryOp::GreaterThanOrEqual => a >= b,
             BinaryOp::LessThanOrEqual => a <= b,
-            _ => todo!()
+            _ => todo!(),
         },
 
         (String(a), String(b)) => match op {
@@ -54,13 +47,11 @@ fn eval_binary(left: Value, op: BinaryOp, right: Value) -> bool {
     }
 }
 
-
 // ========================
 // EXPRESSION EVALUATION
 // ========================
 
-fn eval_expr(expr: &Expr, row: &Vec<Value>, table: &Table) -> Value {
-
+fn eval_expr(expr: &Expr, row: &[Value], table: &Table) -> Value {
     match &expr.kind {
         ExprKind::Literal(lit) => match lit {
             Literal::Integer(i) => Value::Integer(*i),
@@ -71,8 +62,6 @@ fn eval_expr(expr: &Expr, row: &Vec<Value>, table: &Table) -> Value {
         },
 
         ExprKind::Identifier(name) => {
-
-            
             let idx = table
                 .columns
                 .iter()
@@ -95,7 +84,6 @@ fn eval_expr(expr: &Expr, row: &Vec<Value>, table: &Table) -> Value {
     }
 }
 
-
 // ========================
 // CONSTANT EVAL (INSERT)
 // ========================
@@ -113,7 +101,6 @@ fn eval_const(expr: &Expr) -> Value {
     }
 }
 
-
 // ========================
 // FORMATTING
 // ========================
@@ -128,6 +115,29 @@ fn format_value(v: &Value) -> String {
     }
 }
 
+fn print_projected_row(row: &[Value], table: &Table, stmt: &SelectStatement) {
+    let select_all = stmt.columns.len() == 1 && matches!(stmt.columns[0], SelectItem::Wildcard);
+
+    if select_all {
+        let formatted: Vec<String> = row.iter().map(format_value).collect();
+
+        println!("{}", formatted.join(" | "));
+    } else {
+        let formatted: Vec<String> = stmt
+            .columns
+            .iter()
+            .filter_map(|item| match item {
+                SelectItem::Expression { expr, .. } => {
+                    Some(format_value(&eval_expr(expr, row, table)))
+                }
+
+                SelectItem::Wildcard => None,
+            })
+            .collect();
+
+        println!("{}", formatted.join(" | "));
+    }
+}
 
 // ========================
 // EXECUTOR
@@ -146,41 +156,32 @@ impl Executor {
         Self { database, path }
     }
 
-    pub fn execute(
-        &mut self,
-        statement: Statement,
-    ) -> Result<(), BackendError> {
+    pub fn execute(&mut self, statement: Statement) -> Result<(), BackendError> {
         match statement.kind {
-            StatementKind::CreateTable(stmt) => {
-                self.execute_create_table(stmt)
-            }
-            StatementKind::Insert(stmt) => {
-                self.execute_insert(stmt)
-            }
-            StatementKind::Select(stmt) => {
-                self.execute_select(stmt)
-            }
+            StatementKind::CreateTable(stmt) => self.execute_create_table(stmt),
+            StatementKind::Insert(stmt) => self.execute_insert(stmt),
+            StatementKind::Select(stmt) => self.execute_select(stmt),
         }
     }
-
 
     // ========================
     // CREATE TABLE
     // ========================
 
-    fn execute_create_table(
-        &mut self,
-        stmt: CreateTableStatement,
-    ) -> Result<(), BackendError> {
+    fn execute_create_table(&mut self, stmt: CreateTableStatement) -> Result<(), BackendError> {
         if self.database.tables.contains_key(&stmt.name) {
             return Err(BackendError::TableAlreadyExists(stmt.name));
         }
+
+        let primary_key_column = stmt.columns.iter().position(|c| c.primary_key);
 
         self.database.tables.insert(
             stmt.name,
             Table {
                 columns: stmt.columns,
                 rows: Vec::new(),
+                primary_key_column,
+                primary_key_index: HashMap::new(),
             },
         );
 
@@ -188,25 +189,16 @@ impl Executor {
         Ok(())
     }
 
-
     // ========================
     // INSERT
     // ========================
-
-    fn execute_insert(
-        &mut self,
-        stmt: InsertStatement,
-    ) -> Result<(), BackendError> {
+    fn execute_insert(&mut self, stmt: InsertStatement) -> Result<(), BackendError> {
         let table = self
             .database
             .tables
             .get_mut(&stmt.table)
-            .ok_or_else(|| {
-                BackendError::TableNotFound(stmt.table.clone())
-            })?;
+            .ok_or_else(|| BackendError::TableNotFound(stmt.table.clone()))?;
 
-        // IMPORTANT FIX:
-        // ensure row aligns with schema size
         let mut row = vec![Value::Null; table.columns.len()];
 
         for (i, expr) in stmt.values.iter().enumerate() {
@@ -215,29 +207,81 @@ impl Executor {
             }
         }
 
+        // Primary key validation
+        if let Some(pk_col) = table.primary_key_column {
+            let pk_value = PrimaryKeyValue::try_from(&row[pk_col]).map_err(|_| {
+                BackendError::InvalidPrimaryKey("unsupported primary key type".to_string())
+            })?;
+
+            if table.primary_key_index.contains_key(&pk_value) {
+                return Err(BackendError::DuplicatePrimaryKey(format!("{pk_value:?}")));
+            }
+        }
+
+        let row_index = table.rows.len();
+
         table.rows.push(row);
 
+        // Update index
+        if let Some(pk_col) = table.primary_key_column {
+            let pk_value =
+                PrimaryKeyValue::try_from(&table.rows[row_index][pk_col]).map_err(|_| {
+                    BackendError::InvalidPrimaryKey("unsupported primary key type".to_string())
+                })?;
+
+            table.primary_key_index.insert(pk_value, row_index);
+        }
+
         save_db(&self.database, &self.path)?;
+
         Ok(())
     }
-
 
     // ========================
     // SELECT
     // ========================
 
-    fn execute_select(
-        &mut self,
-        stmt: SelectStatement,
-    ) -> Result<(), BackendError> {
+    fn execute_select(&mut self, stmt: SelectStatement) -> Result<(), BackendError> {
         let table = self
             .database
             .tables
             .get(&stmt.table)
-            .ok_or_else(|| {
-                BackendError::TableNotFound(stmt.table.clone())
-            })?;
+            .ok_or_else(|| BackendError::TableNotFound(stmt.table.clone()))?;
 
+        // Fast path:
+        // SELECT ... WHERE pk = literal
+        if let Some(where_expr) = &stmt.where_clause {
+            if let ExprKind::Binary {
+                left,
+                op: BinaryOp::Equal,
+                right,
+            } = &where_expr.kind
+            {
+                if let ExprKind::Identifier(column_name) = &left.kind {
+                    if let Some(pk_col) = table.primary_key_column {
+                        let pk_name = &table.columns[pk_col].name;
+
+                        if pk_name == column_name {
+                            let literal_value = eval_const(right);
+
+                            if let Ok(pk_value) = PrimaryKeyValue::try_from(&literal_value) {
+                                if let Some(row_idx) = table.primary_key_index.get(&pk_value) {
+                                    let row = &table.rows[*row_idx];
+
+                                    print_projected_row(row, table, &stmt);
+
+                                    return Ok(());
+                                }
+
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: full scan
         for row in &table.rows {
             let mut matches = true;
 
@@ -248,12 +292,28 @@ impl Executor {
             }
 
             if matches {
-                let formatted: Vec<String> =
-                    row.iter().map(format_value).collect();
-
-                println!("{}", formatted.join(" | "));
+                print_projected_row(row, table, &stmt);
             }
         }
+
+        Ok(())
+    }
+
+    pub fn seed(&mut self, table_name: &str, count: usize) -> Result<(), BackendError> {
+        let table = self
+            .database
+            .tables
+            .get_mut(table_name)
+            .ok_or_else(|| BackendError::TableNotFound(table_name.to_string()))?;
+
+        for i in 0..count {
+            table.rows.push(vec![
+                Value::Integer(i as i64),
+                Value::String(format!("user{}", i)),
+            ]);
+        }
+
+        save_db(&self.database, &self.path)?;
 
         Ok(())
     }

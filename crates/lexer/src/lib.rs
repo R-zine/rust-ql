@@ -1,7 +1,4 @@
 mod helpers;
 mod lexer;
 
-pub use lexer::{
-    LexError,
-    Lexer,
-};
+pub use lexer::{LexError, Lexer};

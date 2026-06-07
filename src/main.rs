@@ -1,11 +1,14 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    time::Instant,
+};
 
 use backend::Engine;
 
 fn main() {
     let mut engine = Engine::new();
 
-    println!("MiniDB");
+    println!("Rust DB");
     println!("Type 'exit' or 'quit' to close.");
     println!();
 
@@ -26,9 +29,7 @@ fn main() {
 
         let input = input.trim();
 
-        if input.eq_ignore_ascii_case("exit")
-            || input.eq_ignore_ascii_case("quit")
-        {
+        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
             break;
         }
 
@@ -36,9 +37,38 @@ fn main() {
             continue;
         }
 
+        if input.to_ascii_lowercase().starts_with(".seed") {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+
+            if parts.len() != 3 {
+                eprintln!("Usage: seed <table> <count>");
+                continue;
+            }
+
+            let table = parts[1];
+
+            let count = match parts[2].parse::<usize>() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("Invalid count");
+                    continue;
+                }
+            };
+
+            match engine.seed(table, count) {
+                Ok(_) => println!("Inserted {count} rows into {table}"),
+                Err(err) => eprintln!("ERROR: {err:?}"),
+            }
+
+            continue;
+        }
+
+        let start = Instant::now();
         match engine.execute(input) {
             Ok(_) => {
-                println!("OK");
+                let elapsed = start.elapsed();
+
+                println!("OK ({elapsed:?})");
             }
 
             Err(err) => {

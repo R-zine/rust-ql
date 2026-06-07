@@ -1,11 +1,6 @@
-use interface::{
-    BinaryOp, Expr, ExprKind, Keyword, SpannedToken, Token
-};
+use interface::{BinaryOp, Expr, ExprKind, Keyword, SpannedToken, Token};
 
-use crate::{
-    error::ParseError,
-    parser::Parser,
-};
+use crate::{error::ParseError, parser::Parser};
 
 impl Parser {
     pub(crate) fn current(&self) -> &SpannedToken {
@@ -18,10 +13,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn expect_keyword(
-        &mut self,
-        keyword: Keyword,
-    ) -> Result<(), ParseError> {
+    pub(crate) fn expect_keyword(&mut self, keyword: Keyword) -> Result<(), ParseError> {
         match &self.current().token {
             Token::Keyword(k) if *k == keyword => {
                 self.advance();
@@ -35,10 +27,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn expect_token(
-        &mut self,
-        token: Token,
-    ) -> Result<(), ParseError> {
+    pub(crate) fn expect_token(&mut self, token: Token) -> Result<(), ParseError> {
         if self.current().token == token {
             self.advance();
             Ok(())
@@ -51,9 +40,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_identifier(
-        &mut self,
-    ) -> Result<String, ParseError> {
+    pub(crate) fn parse_identifier(&mut self) -> Result<String, ParseError> {
         match &self.current().token {
             Token::Identifier(name) => {
                 let value = name.clone();
@@ -68,9 +55,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_identifier_list(
-        &mut self,
-    ) -> Result<Vec<String>, ParseError> {
+    pub(crate) fn parse_identifier_list(&mut self) -> Result<Vec<String>, ParseError> {
         let mut identifiers = Vec::new();
 
         self.expect_token(Token::LParen)?;
@@ -99,9 +84,7 @@ impl Parser {
         Ok(identifiers)
     }
 
-    pub(crate) fn parse_expression_list(
-        &mut self,
-    ) -> Result<Vec<Expr>, ParseError> {
+    pub(crate) fn parse_expression_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut expressions = Vec::new();
 
         self.expect_token(Token::LParen)?;
@@ -130,87 +113,87 @@ impl Parser {
         Ok(expressions)
     }
 
-fn parse_binary_op_if_any(&mut self) -> Option<BinaryOp> {
-    match &self.current().token {
-        Token::Equal => {
-            self.advance();
-            Some(BinaryOp::Equal)
+    fn parse_binary_op_if_any(&mut self) -> Option<BinaryOp> {
+        match &self.current().token {
+            Token::Equal => {
+                self.advance();
+                Some(BinaryOp::Equal)
+            }
+
+            Token::NotEqual => {
+                self.advance();
+                Some(BinaryOp::NotEqual)
+            }
+
+            Token::GreaterThan => {
+                self.advance();
+                Some(BinaryOp::GreaterThan)
+            }
+
+            Token::LessThan => {
+                self.advance();
+                Some(BinaryOp::LessThan)
+            }
+
+            Token::GreaterThanOrEqual => {
+                self.advance();
+                Some(BinaryOp::GreaterThanOrEqual)
+            }
+
+            Token::LessThanOrEqual => {
+                self.advance();
+                Some(BinaryOp::LessThanOrEqual)
+            }
+
+            _ => None,
         }
-
-        Token::NotEqual => {
-            self.advance();
-            Some(BinaryOp::NotEqual)
-        }
-
-        Token::GreaterThan => {
-            self.advance();
-            Some(BinaryOp::GreaterThan)
-        }
-
-        Token::LessThan => {
-            self.advance();
-            Some(BinaryOp::LessThan)
-        }
-
-        Token::GreaterThanOrEqual => {
-            self.advance();
-            Some(BinaryOp::GreaterThanOrEqual)
-        }
-
-        Token::LessThanOrEqual => {
-            self.advance();
-            Some(BinaryOp::LessThanOrEqual)
-        }
-
-        _ => None,
-    }
-}
-
-fn parse_primary(&mut self) -> Result<Expr, ParseError> {
-    let token = self.current().clone();
-
-    match token.token {
-        Token::Identifier(name) => {
-            self.advance();
-            Ok(Expr::identifier(name, token.span))
-        }
-
-        Token::Integer(i) => {
-            self.advance();
-            Ok(Expr::integer(i, token.span))
-        }
-
-        Token::String(s) => {
-            self.advance();
-            Ok(Expr::string(s, token.span))
-        }
-
-        _ => Err(ParseError::UnexpectedToken {
-            expected: "expression".into(),
-            found: format!("{:?}", token.token),
-            span: token.span,
-        }),
-    }
-}
-
-pub(crate) fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-    let mut left = self.parse_primary()?; // id or literal
-
-    while let Some(op) = self.parse_binary_op_if_any() {
-        let right = self.parse_primary()?; // next value
-
-        let span = left.span.clone().merge(right.span.clone());
-
-        left = Expr {
-            kind: ExprKind::Binary {
-                left: Box::new(left),
-                op,
-                right: Box::new(right),
-            },
-            span,
-        };
     }
 
-    Ok(left)
-}
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        let token = self.current().clone();
+
+        match token.token {
+            Token::Identifier(name) => {
+                self.advance();
+                Ok(Expr::identifier(name, token.span))
+            }
+
+            Token::Integer(i) => {
+                self.advance();
+                Ok(Expr::integer(i, token.span))
+            }
+
+            Token::String(s) => {
+                self.advance();
+                Ok(Expr::string(s, token.span))
+            }
+
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "expression".into(),
+                found: format!("{:?}", token.token),
+                span: token.span,
+            }),
+        }
+    }
+
+    pub(crate) fn parse_expression(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_primary()?; // id or literal
+
+        while let Some(op) = self.parse_binary_op_if_any() {
+            let right = self.parse_primary()?; // next value
+
+            let span = left.span.clone().merge(right.span.clone());
+
+            left = Expr {
+                kind: ExprKind::Binary {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        Ok(left)
+    }
 }
