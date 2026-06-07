@@ -77,7 +77,7 @@ fn eval_expr(expr: &Expr, row: &[Value], table: &Table) -> Value {
             let l = eval_expr(left, row, table);
             let r = eval_expr(right, row, table);
 
-            Value::Boolean(eval_binary(l, op.clone(), r))
+            Value::Boolean(eval_binary(l, *op, r))
         }
 
         _ => Value::Null,
@@ -250,15 +250,14 @@ impl Executor {
 
         // Fast path:
         // SELECT ... WHERE pk = literal
-        if let Some(where_expr) = &stmt.where_clause {
-            if let ExprKind::Binary {
+        if let Some(where_expr) = &stmt.where_clause
+            && let ExprKind::Binary {
                 left,
                 op: BinaryOp::Equal,
                 right,
             } = &where_expr.kind
-            {
-                if let ExprKind::Identifier(column_name) = &left.kind {
-                    if let Some(pk_col) = table.primary_key_column {
+                && let ExprKind::Identifier(column_name) = &left.kind
+                    && let Some(pk_col) = table.primary_key_column {
                         let pk_name = &table.columns[pk_col].name;
 
                         if pk_name == column_name {
@@ -277,9 +276,6 @@ impl Executor {
                             }
                         }
                     }
-                }
-            }
-        }
 
         // Fallback: full scan
         for row in &table.rows {
