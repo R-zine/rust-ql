@@ -182,7 +182,7 @@ impl Parser {
         while let Some(op) = self.parse_binary_op_if_any() {
             let right = self.parse_primary()?; // next value
 
-            let span = left.span.clone().merge(right.span.clone());
+            let span = left.span.merge(right.span);
 
             left = Expr {
                 kind: ExprKind::Binary {
