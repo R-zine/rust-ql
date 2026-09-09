@@ -2,9 +2,14 @@
 name = "rust-ql"
 version = "0.1.0"
 edition = "2024"
+description = "A small SQL-like database written in Rust"
+license = "MIT"
+readme = "readme.md"
+rust-version = "1.85"
 
 [workspace]
-members = ["crates/backend",
+members = [
+    "crates/backend",
     "crates/interface",
     "crates/lexer",
     "crates/parser",
@@ -13,4 +18,3 @@ resolver = "3"
 
 [dependencies]
 backend = { path = "./crates/backend" }
-

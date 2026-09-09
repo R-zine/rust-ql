@@ -1,315 +1,436 @@
-use std::collections::HashMap;
+use std::{collections::HashSet, path::PathBuf};
 
 use interface::{
-    BinaryOp, CreateTableStatement, Expr, ExprKind, InsertStatement, Literal, SelectItem,
-    SelectStatement, Statement, StatementKind, Value,
+    BinaryOp, ColumnDefinition, CreateTableStatement, DataType, Expr, ExprKind, InsertStatement,
+    SelectItem, SelectStatement, Statement, StatementKind, Value,
 };
-
-use crate::database::PrimaryKeyValue;
-use crate::persistence::{load_db, save_db};
 
 use crate::{
-    database::{Database, Table},
+    database::{Database, PrimaryKeyValue, Row, Table},
     error::BackendError,
+    evaluation::{eval_const, eval_on_row, validate_expression, validate_where_expression},
+    persistence::{load_db, save_db},
 };
 
-// ========================
-// BINARY EVALUATION
-// ========================
-
-fn eval_binary(left: Value, op: BinaryOp, right: Value) -> bool {
-    use Value::*;
-
-    match (left, right) {
-        (Integer(a), Integer(b)) => match op {
-            BinaryOp::Equal => a == b,
-            BinaryOp::NotEqual => a != b,
-            BinaryOp::GreaterThan => a > b,
-            BinaryOp::LessThan => a < b,
-            BinaryOp::GreaterThanOrEqual => a >= b,
-            BinaryOp::LessThanOrEqual => a <= b,
-            _ => todo!(),
-        },
-
-        (String(a), String(b)) => match op {
-            BinaryOp::Equal => a == b,
-            BinaryOp::NotEqual => a != b,
-            _ => false,
-        },
-
-        (Boolean(a), Boolean(b)) => match op {
-            BinaryOp::Equal => a == b,
-            BinaryOp::NotEqual => a != b,
-            _ => false,
-        },
-
-        _ => false,
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Row>,
 }
 
-// ========================
-// EXPRESSION EVALUATION
-// ========================
-
-fn eval_expr(expr: &Expr, row: &[Value], table: &Table) -> Value {
-    match &expr.kind {
-        ExprKind::Literal(lit) => match lit {
-            Literal::Integer(i) => Value::Integer(*i),
-            Literal::Float(f) => Value::Float(*f),
-            Literal::String(s) => Value::String(s.clone()),
-            Literal::Boolean(b) => Value::Boolean(*b),
-            Literal::Null => Value::Null,
-        },
-
-        ExprKind::Identifier(name) => {
-            let idx = table
-                .columns
-                .iter()
-                .position(|c| c.name.eq_ignore_ascii_case(name));
-
-            match idx {
-                Some(i) => row.get(i).cloned().unwrap_or(Value::Null),
-                None => Value::Null,
-            }
-        }
-
-        ExprKind::Binary { left, op, right } => {
-            let l = eval_expr(left, row, table);
-            let r = eval_expr(right, row, table);
-
-            Value::Boolean(eval_binary(l, *op, r))
-        }
-
-        _ => Value::Null,
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecutionResult {
+    TableCreated { table: String },
+    RowsInserted { count: usize },
+    Query(QueryResult),
 }
-
-// ========================
-// CONSTANT EVAL (INSERT)
-// ========================
-
-fn eval_const(expr: &Expr) -> Value {
-    match &expr.kind {
-        ExprKind::Literal(lit) => match lit {
-            Literal::Integer(i) => Value::Integer(*i),
-            Literal::Float(f) => Value::Float(*f),
-            Literal::String(s) => Value::String(s.clone()),
-            Literal::Boolean(b) => Value::Boolean(*b),
-            Literal::Null => Value::Null,
-        },
-        _ => Value::Null,
-    }
-}
-
-// ========================
-// FORMATTING
-// ========================
-
-fn format_value(v: &Value) -> String {
-    match v {
-        Value::Integer(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::String(s) => s.clone(),
-        Value::Boolean(b) => b.to_string(),
-        Value::Null => "NULL".to_string(),
-    }
-}
-
-fn print_projected_row(row: &[Value], table: &Table, stmt: &SelectStatement) {
-    let select_all = stmt.columns.len() == 1 && matches!(stmt.columns[0], SelectItem::Wildcard);
-
-    if select_all {
-        let formatted: Vec<String> = row.iter().map(format_value).collect();
-
-        println!("{}", formatted.join(" | "));
-    } else {
-        let formatted: Vec<String> = stmt
-            .columns
-            .iter()
-            .filter_map(|item| match item {
-                SelectItem::Expression { expr, .. } => {
-                    Some(format_value(&eval_expr(expr, row, table)))
-                }
-
-                SelectItem::Wildcard => None,
-            })
-            .collect();
-
-        println!("{}", formatted.join(" | "));
-    }
-}
-
-fn insert_row(table: &mut Table, row: Vec<Value>) -> Result<(), BackendError> {
-    let row_index = table.rows.len();
-
-    // primary key handling
-    if let Some(pk_col) = table.primary_key_column {
-        let pk_value = PrimaryKeyValue::try_from(&row[pk_col]).map_err(|_| {
-            BackendError::InvalidPrimaryKey("unsupported primary key type".to_string())
-        })?;
-
-        if table.primary_key_index.contains_key(&pk_value) {
-            return Err(BackendError::DuplicatePrimaryKey(format!("{pk_value:?}")));
-        }
-
-        table.primary_key_index.insert(pk_value, row_index);
-    }
-
-    table.rows.push(row);
-
-    Ok(())
-}
-
-// ========================
-// EXECUTOR
-// ========================
 
 pub struct Executor {
     database: Database,
-    path: String,
+    path: PathBuf,
 }
 
 impl Executor {
-    pub fn new(path: impl Into<String>) -> Self {
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, BackendError> {
         let path = path.into();
-        let database = load_db(&path).unwrap_or_default();
-
-        Self { database, path }
+        let database = load_db(&path)?;
+        Ok(Self { database, path })
     }
 
-    pub fn execute(&mut self, statement: Statement) -> Result<(), BackendError> {
+    pub fn execute(&mut self, statement: Statement) -> Result<ExecutionResult, BackendError> {
         match statement.kind {
-            StatementKind::CreateTable(stmt) => self.execute_create_table(stmt),
-            StatementKind::Insert(stmt) => self.execute_insert(stmt),
-            StatementKind::Select(stmt) => self.execute_select(stmt),
+            StatementKind::CreateTable(statement) => self.execute_create_table(statement),
+            StatementKind::Insert(statement) => self.execute_insert(statement),
+            StatementKind::Select(statement) => self.execute_select(statement),
         }
     }
 
-    // ========================
-    // CREATE TABLE
-    // ========================
-
-    fn execute_create_table(&mut self, stmt: CreateTableStatement) -> Result<(), BackendError> {
-        if self.database.tables.contains_key(&stmt.name) {
-            return Err(BackendError::TableAlreadyExists(stmt.name));
+    fn execute_create_table(
+        &mut self,
+        statement: CreateTableStatement,
+    ) -> Result<ExecutionResult, BackendError> {
+        if find_table_name(&self.database, &statement.name).is_some() {
+            return Err(BackendError::TableAlreadyExists(statement.name));
         }
 
-        let primary_key_column = stmt.columns.iter().position(|c| c.primary_key);
+        let table = Table::new(statement.columns).map_err(BackendError::InvalidSchema)?;
+        let name = statement.name;
+        let mut next_database = self.database.clone();
+        next_database.tables.insert(name.clone(), table);
+        save_db(&next_database, &self.path)?;
+        self.database = next_database;
 
-        self.database.tables.insert(
-            stmt.name,
-            Table {
-                columns: stmt.columns,
-                rows: Vec::new(),
-                primary_key_column,
-                primary_key_index: HashMap::new(),
-            },
-        );
-
-        save_db(&self.database, &self.path)?;
-        Ok(())
+        Ok(ExecutionResult::TableCreated { table: name })
     }
 
-    // ========================
-    // INSERT
-    // ========================
-    fn execute_insert(&mut self, stmt: InsertStatement) -> Result<(), BackendError> {
-        let table = self
+    fn execute_insert(
+        &mut self,
+        statement: InsertStatement,
+    ) -> Result<ExecutionResult, BackendError> {
+        let table_name = find_table_name(&self.database, &statement.table)
+            .ok_or_else(|| BackendError::TableNotFound(statement.table.clone()))?
+            .to_string();
+        let source_table = self
             .database
             .tables
-            .get_mut(&stmt.table)
-            .ok_or_else(|| BackendError::TableNotFound(stmt.table.clone()))?;
+            .get(&table_name)
+            .ok_or_else(|| BackendError::TableNotFound(statement.table.clone()))?;
+        let row = build_row(source_table, &table_name, &statement)?;
 
-        let mut row = vec![Value::Null; table.columns.len()];
-
-        for (i, expr) in stmt.values.iter().enumerate() {
-            if i < table.columns.len() {
-                row[i] = eval_const(expr);
-            }
-        }
-
+        let mut next_database = self.database.clone();
+        let table = next_database
+            .tables
+            .get_mut(&table_name)
+            .ok_or_else(|| BackendError::TableNotFound(statement.table.clone()))?;
         insert_row(table, row)?;
+        save_db(&next_database, &self.path)?;
+        self.database = next_database;
 
-        save_db(&self.database, &self.path)?;
-        Ok(())
+        Ok(ExecutionResult::RowsInserted { count: 1 })
     }
 
-    // ========================
-    // SELECT
-    // ========================
-
-    fn execute_select(&mut self, stmt: SelectStatement) -> Result<(), BackendError> {
+    fn execute_select(&self, statement: SelectStatement) -> Result<ExecutionResult, BackendError> {
+        let table_name = find_table_name(&self.database, &statement.table)
+            .ok_or_else(|| BackendError::TableNotFound(statement.table.clone()))?;
         let table = self
             .database
             .tables
-            .get(&stmt.table)
-            .ok_or_else(|| BackendError::TableNotFound(stmt.table.clone()))?;
+            .get(table_name)
+            .ok_or_else(|| BackendError::TableNotFound(statement.table.clone()))?;
 
-        // Fast path:
-        // SELECT ... WHERE pk = literal
-        if let Some(where_expr) = &stmt.where_clause
-            && let ExprKind::Binary {
-                left,
-                op: BinaryOp::Equal,
-                right,
-            } = &where_expr.kind
-            && let ExprKind::Identifier(column_name) = &left.kind
-            && let Some(pk_col) = table.primary_key_column
-        {
-            let pk_name = &table.columns[pk_col].name;
+        validate_select(&statement, table, table_name)?;
+        let columns = projection_columns(&statement, table);
+        let mut rows = Vec::new();
 
-            if pk_name == column_name {
-                let literal_value = eval_const(right);
-
-                if let Ok(pk_value) = PrimaryKeyValue::try_from(&literal_value) {
-                    if let Some(row_idx) = table.primary_key_index.get(&pk_value) {
-                        let row = &table.rows[*row_idx];
-
-                        print_projected_row(row, table, &stmt);
-
-                        return Ok(());
+        match primary_key_lookup(table, statement.where_clause.as_ref())? {
+            IndexLookup::Candidate(Some(row_index)) => {
+                let row = &table.rows[row_index];
+                if row_matches(row, table, statement.where_clause.as_ref())? {
+                    rows.push(project_row(row, table, &statement)?);
+                }
+            }
+            IndexLookup::Candidate(None) => {}
+            IndexLookup::NotApplicable => {
+                for row in &table.rows {
+                    if row_matches(row, table, statement.where_clause.as_ref())? {
+                        rows.push(project_row(row, table, &statement)?);
                     }
-
-                    return Ok(());
                 }
             }
         }
 
-        // Fallback: full scan
-        for row in &table.rows {
-            let mut matches = true;
-
-            if let Some(where_expr) = &stmt.where_clause {
-                let value = eval_expr(where_expr, row, table);
-
-                matches = matches!(value, Value::Boolean(true));
-            }
-
-            if matches {
-                print_projected_row(row, table, &stmt);
-            }
-        }
-
-        Ok(())
+        Ok(ExecutionResult::Query(QueryResult { columns, rows }))
     }
 
-    pub fn seed(&mut self, table_name: &str, count: usize) -> Result<(), BackendError> {
-        let table = self
-            .database
+    pub fn seed(
+        &mut self,
+        requested_table_name: &str,
+        count: usize,
+    ) -> Result<ExecutionResult, BackendError> {
+        let table_name = find_table_name(&self.database, requested_table_name)
+            .ok_or_else(|| BackendError::TableNotFound(requested_table_name.to_string()))?
+            .to_string();
+
+        if count == 0 {
+            return Ok(ExecutionResult::RowsInserted { count: 0 });
+        }
+
+        let mut next_database = self.database.clone();
+        let table = next_database
             .tables
-            .get_mut(table_name)
-            .ok_or_else(|| BackendError::TableNotFound(table_name.to_string()))?;
+            .get_mut(&table_name)
+            .ok_or_else(|| BackendError::TableNotFound(requested_table_name.to_string()))?;
 
-        for i in 0..count {
-            let row = vec![
-                Value::Integer(i as i64),
-                Value::String(format!("user{}", i)),
-            ];
-
-            insert_row(table, row)?; // IMPORTANT FIX
+        for _ in 0..count {
+            let row = next_seed_row(table)?;
+            insert_row(table, row)?;
         }
 
-        save_db(&self.database, &self.path)?;
-        Ok(())
+        save_db(&next_database, &self.path)?;
+        self.database = next_database;
+        Ok(ExecutionResult::RowsInserted { count })
     }
+}
+
+fn find_table_name<'a>(database: &'a Database, requested: &str) -> Option<&'a str> {
+    database
+        .tables
+        .keys()
+        .find(|name| name.eq_ignore_ascii_case(requested))
+        .map(String::as_str)
+}
+
+fn build_row(
+    table: &Table,
+    table_name: &str,
+    statement: &InsertStatement,
+) -> Result<Row, BackendError> {
+    let column_indices = if statement.columns.is_empty() {
+        if statement.values.len() != table.columns.len() {
+            return Err(BackendError::ValueCountMismatch {
+                expected: table.columns.len(),
+                actual: statement.values.len(),
+            });
+        }
+        (0..table.columns.len()).collect()
+    } else {
+        if statement.values.len() != statement.columns.len() {
+            return Err(BackendError::ValueCountMismatch {
+                expected: statement.columns.len(),
+                actual: statement.values.len(),
+            });
+        }
+
+        let mut seen = HashSet::new();
+        let mut indices = Vec::with_capacity(statement.columns.len());
+        for requested in &statement.columns {
+            let index = table
+                .columns
+                .iter()
+                .position(|column| column.name.eq_ignore_ascii_case(requested))
+                .ok_or_else(|| BackendError::ColumnNotFound {
+                    table: table_name.to_string(),
+                    column: requested.clone(),
+                })?;
+            if !seen.insert(index) {
+                return Err(BackendError::DuplicateColumn(requested.clone()));
+            }
+            indices.push(index);
+        }
+        indices
+    };
+
+    let mut row = vec![Value::Null; table.columns.len()];
+    for (expression, column_index) in statement.values.iter().zip(column_indices) {
+        let value = eval_const(expression)?;
+        row[column_index] = coerce_for_column(&table.columns[column_index], value)?;
+    }
+
+    for (column, value) in table.columns.iter().zip(&row) {
+        validate_value(column, value)?;
+    }
+    Ok(row)
+}
+
+fn coerce_for_column(column: &ColumnDefinition, value: Value) -> Result<Value, BackendError> {
+    match (column.data_type, value) {
+        (DataType::Float, Value::Integer(value)) => Ok(Value::Float(value as f64)),
+        (_, value) => {
+            validate_value(column, &value)?;
+            Ok(value)
+        }
+    }
+}
+
+fn validate_value(column: &ColumnDefinition, value: &Value) -> Result<(), BackendError> {
+    if matches!(value, Value::Null) {
+        return if column.nullable && !column.primary_key {
+            Ok(())
+        } else {
+            Err(BackendError::NullConstraintViolation(column.name.clone()))
+        };
+    }
+
+    let valid = matches!(
+        (column.data_type, value),
+        (DataType::Integer, Value::Integer(_))
+            | (DataType::Float, Value::Float(_))
+            | (DataType::Boolean, Value::Boolean(_))
+            | (DataType::String, Value::String(_))
+    );
+    if valid {
+        Ok(())
+    } else {
+        Err(BackendError::TypeMismatch {
+            column: column.name.clone(),
+            expected: column.data_type,
+            found: value.type_name(),
+        })
+    }
+}
+
+fn insert_row(table: &mut Table, row: Row) -> Result<(), BackendError> {
+    let row_index = table.rows.len();
+    if let Some(column_index) = table.primary_key_column {
+        let value = row.get(column_index).ok_or_else(|| {
+            BackendError::InvalidPrimaryKey("primary key column is outside the row".into())
+        })?;
+        let key = PrimaryKeyValue::try_from(value)
+            .map_err(|_| BackendError::InvalidPrimaryKey("unsupported primary key value".into()))?;
+        if table.primary_key_index.contains_key(&key) {
+            return Err(BackendError::DuplicatePrimaryKey(format!("{key:?}")));
+        }
+        table.primary_key_index.insert(key, row_index);
+    }
+
+    table.rows.push(row);
+    Ok(())
+}
+
+fn validate_select(
+    statement: &SelectStatement,
+    table: &Table,
+    table_name: &str,
+) -> Result<(), BackendError> {
+    for item in &statement.columns {
+        if let SelectItem::Expression { expr, .. } = item {
+            validate_expression(expr, table, table_name)?;
+        }
+    }
+    if let Some(expression) = &statement.where_clause {
+        validate_where_expression(expression, table, table_name)?;
+    }
+    Ok(())
+}
+
+fn projection_columns(statement: &SelectStatement, table: &Table) -> Vec<String> {
+    let mut columns = Vec::new();
+    for item in &statement.columns {
+        match item {
+            SelectItem::Wildcard => {
+                columns.extend(table.columns.iter().map(|column| column.name.clone()));
+            }
+            SelectItem::Expression { expr, alias } => columns.push(
+                alias
+                    .clone()
+                    .unwrap_or_else(|| expression_label(expr).to_string()),
+            ),
+        }
+    }
+    columns
+}
+
+fn expression_label(expression: &Expr) -> &str {
+    match &expression.kind {
+        ExprKind::Identifier(name) => name,
+        _ => "expression",
+    }
+}
+
+fn project_row(
+    row: &[Value],
+    table: &Table,
+    statement: &SelectStatement,
+) -> Result<Row, BackendError> {
+    let mut projected = Vec::new();
+    for item in &statement.columns {
+        match item {
+            SelectItem::Wildcard => projected.extend(row.iter().cloned()),
+            SelectItem::Expression { expr, .. } => projected.push(eval_on_row(expr, row, table)?),
+        }
+    }
+    Ok(projected)
+}
+
+fn row_matches(
+    row: &[Value],
+    table: &Table,
+    expression: Option<&Expr>,
+) -> Result<bool, BackendError> {
+    let Some(expression) = expression else {
+        return Ok(true);
+    };
+
+    match eval_on_row(expression, row, table)? {
+        Value::Boolean(value) => Ok(value),
+        Value::Null => Ok(false),
+        value => Err(BackendError::InvalidExpression(format!(
+            "WHERE expression must produce BOOLEAN, found {}",
+            value.type_name()
+        ))),
+    }
+}
+
+enum IndexLookup {
+    NotApplicable,
+    Candidate(Option<usize>),
+}
+
+fn primary_key_lookup(
+    table: &Table,
+    expression: Option<&Expr>,
+) -> Result<IndexLookup, BackendError> {
+    let (column_name, constant) = match expression.map(|expression| &expression.kind) {
+        Some(ExprKind::Binary {
+            left,
+            op: BinaryOp::Equal,
+            right,
+        }) => match (&left.kind, &right.kind) {
+            (ExprKind::Identifier(name), ExprKind::Literal(_)) => (name, right.as_ref()),
+            (ExprKind::Literal(_), ExprKind::Identifier(name)) => (name, left.as_ref()),
+            _ => return Ok(IndexLookup::NotApplicable),
+        },
+        _ => return Ok(IndexLookup::NotApplicable),
+    };
+
+    let Some(column_index) = table.primary_key_column else {
+        return Ok(IndexLookup::NotApplicable);
+    };
+    let column = &table.columns[column_index];
+    if !column.name.eq_ignore_ascii_case(column_name) {
+        return Ok(IndexLookup::NotApplicable);
+    }
+
+    let value = eval_const(constant)?;
+    let exact_type = matches!(
+        (column.data_type, &value),
+        (DataType::Integer, Value::Integer(_))
+            | (DataType::String, Value::String(_))
+            | (DataType::Boolean, Value::Boolean(_))
+    );
+    if !exact_type {
+        return Ok(IndexLookup::NotApplicable);
+    }
+
+    let key = PrimaryKeyValue::try_from(&value)
+        .map_err(|_| BackendError::InvalidPrimaryKey("unsupported primary key value".into()))?;
+    Ok(IndexLookup::Candidate(
+        table.primary_key_index.get(&key).copied(),
+    ))
+}
+
+fn next_seed_row(table: &Table) -> Result<Row, BackendError> {
+    let mut ordinal = table.rows.len();
+    let max_attempts = if table
+        .primary_key_column
+        .is_some_and(|index| table.columns[index].data_type == DataType::Boolean)
+    {
+        2
+    } else {
+        usize::MAX
+    };
+
+    for _ in 0..max_attempts {
+        let row = table
+            .columns
+            .iter()
+            .map(|column| seed_value(column.data_type, ordinal))
+            .collect::<Result<Row, BackendError>>()?;
+        let available = table.primary_key_column.is_none_or(|index| {
+            PrimaryKeyValue::try_from(&row[index])
+                .ok()
+                .is_some_and(|key| !table.primary_key_index.contains_key(&key))
+        });
+        if available {
+            return Ok(row);
+        }
+        ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| BackendError::Execution("seed counter overflow".into()))?;
+    }
+
+    Err(BackendError::InvalidPrimaryKey(
+        "no unused BOOLEAN primary key remains".into(),
+    ))
+}
+
+fn seed_value(data_type: DataType, ordinal: usize) -> Result<Value, BackendError> {
+    let integer = i64::try_from(ordinal)
+        .map_err(|_| BackendError::Execution("seed value exceeds INTEGER range".into()))?;
+    Ok(match data_type {
+        DataType::Integer => Value::Integer(integer),
+        DataType::Float => Value::Float(integer as f64),
+        DataType::Boolean => Value::Boolean(ordinal & 1 == 0),
+        DataType::String => Value::String(format!("value{ordinal}")),
+    })
 }

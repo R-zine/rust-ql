@@ -2,7 +2,10 @@
 name = "parser"
 version = "0.1.0"
 edition = "2024"
-
+license = "MIT"
 
 [dependencies]
 interface = { path = "../interface" }
+
+[dev-dependencies]
+lexer = { path = "../lexer" }

@@ -1,8 +1,8 @@
 [package]
-name = "lexer"
+name = "interface"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-interface = { path = "../interface" }
+serde = { version = "1", features = ["derive"] }

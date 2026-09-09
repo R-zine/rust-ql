@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(git rev-parse --show-toplevel)
+cd "$repository_root"
+
+echo "pre-commit: checking staged whitespace"
+git diff --cached --check
+
+echo "pre-commit: verifying Cargo.lock"
+cargo metadata --locked --format-version 1 >/dev/null
+
+echo "pre-commit: checking formatting"
+cargo fmt --all -- --check
+
+echo "pre-commit: running Clippy"
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+echo "pre-commit: running tests"
+cargo test --workspace --all-targets --all-features --locked
+
+echo "pre-commit: checking documentation"
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+
+echo "pre-commit: all checks passed"
